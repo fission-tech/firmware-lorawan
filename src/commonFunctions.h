@@ -37,7 +37,7 @@ void sendRelayState(byte destination, byte localAddress, int state)
     LoRa.endPacket();
 
     // Debug
-    Serial.println("Sent relay state: " + String(state));
+    Serial.println("TX - Sent relay state: " + String(state));
 }
 
 /**

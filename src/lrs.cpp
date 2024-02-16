@@ -8,12 +8,37 @@
  */
 
 // Include the SPI and LoRa libraries
-#include <SPI.h>
-#include <LoRa.h>
+#include <SPI.h>        // SPI library which is required by LoRa
+#include <LoRa.h>       // LoRa library which is required for LoRa communication
+#include <ArduinoOTA.h> // ArduinoOTA library which is required for OTA updates
+#if defined(ESP8266)
+/* ESP8266 Dependencies */
+#include <ESP8266WiFi.h> // WiFi library which is required for WiFi communication
+#include <ESP8266mDNS.h> // ESP8266mDNS library which is required for mDNS
+#elif defined(ESP32)
+/* ESP32 Dependencies */
+#include <WiFi.h>    // WiFi library which is required for WiFi communication
+#include <ESPmDNS.h> // ESP8266mDNS library which is required for mDNS
+#endif
+
+// #include <EEPROM.h>
+// #include <EEPROMWearLevel.h>   // EEPROMWearLevel library which is required for wear leveling of EEPROM
 #include "commonFunctions.h"
 
 // Set to true for transmitter, false for receiver
 bool isTransmitter = true;
+//bool isTransmitter = false;
+
+byte txAddress = 0xFF; // address of this device
+byte rxAddress = 0x07; // destination to send to
+
+// Set to true to enable WiFi on the ESP8266
+bool enableWiFi = false;
+
+String defaultAPssid = "Sensible IOT"; // default AP SSID
+String defaultAPpassword = "13371337"; // default AP password
+
+uint16_t relayStateControlId; // Declare the control ID globally
 
 // Define the pins for the LoRa module
 #define nss 15 // LoRa chip select
@@ -25,9 +50,6 @@ const int sw1 = 4;
 
 // Define the pin for the relay
 const int RLY1 = 5; // replace with your relay pin
-
-byte localAddress = 0x04; // address of this device
-byte destination = 0x03;  // destination to send to
 
 // Declare a variable to store the previous state of the dry contact
 int previousState = -1;
@@ -72,8 +94,71 @@ void setup()
     // Set the LoRa module pins
     LoRa.setPins(nss, rst, dio0);
 
+    // Wait
+    delay(100);
+
     // Initialize the LoRa module at 433 MHz
-    LoRa.begin(433E6) ? Serial.println("Starting LoRa started!") : Serial.println("Starting LoRa failed!");
+    LoRa.begin(433E6) ? Serial.println("LoRa started successfully!") : Serial.println("LoRa startup failed!");
+
+    // Announce startup
+    isTransmitter ? Serial.println("TX - Transmitter started!") : Serial.println("RX - Receiver started!");
+
+    if (enableWiFi)
+    {
+        /* Connect WiFi */
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(defaultAPssid, defaultAPpassword);
+        if (WiFi.waitForConnectResult() != WL_CONNECTED)
+        {
+            Serial.printf("WiFi Failed!\n");
+            return;
+        }
+        Serial.print("IP Address: ");
+        Serial.println(WiFi.localIP());
+
+        // Initialise OTA update service
+        ArduinoOTA.onStart([]()
+                           {
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH)
+          type = "sketch";
+        else // U_SPIFFS
+          type = "filesystem";
+
+        // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+        Serial.println("Start updating " + type); });
+
+        ArduinoOTA.onEnd([]()
+                         { Serial.println("\nEnd"); });
+
+        ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
+                              { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); });
+
+        ArduinoOTA.onError([](ota_error_t error)
+                           {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR) Serial.println("End Failed"); });
+
+        // Start OTA update service
+        ArduinoOTA.begin();
+
+        // Update mDNS
+        MDNS.update();
+
+        // Start mDNS
+        if (MDNS.begin("lora"))
+        {
+            Serial.println("mDNS responder started. Connect to http://lora.local to view the Dashboard.");
+        }
+        else
+        {
+            Serial.println("Error setting up MDNS responder!");
+        }
+    }
 }
 
 // The loop function runs over and over again forever
@@ -81,6 +166,12 @@ void loop()
 {
     // Update the LED
     updateLED();
+
+    if (enableWiFi)
+    {
+        // handle OTA update requests
+        ArduinoOTA.handle();
+    }
 
     if (isTransmitter)
     {
@@ -117,21 +208,21 @@ void loop()
                     // If the state has changed
                     if (sw1State != previousState)
                     {
-                        sendRelayState(destination, localAddress, sw1State);
+                        sendRelayState(rxAddress, txAddress, sw1State);
 
                         // Update the previous state with the current state
                         previousState = sw1State;
 
                         // Debug
-                        Serial.println("Wrote changed relay state: " + String(sw1State));
+                        Serial.println("TX - Saved changed relay state: " + String(sw1State));
                         // Set the state of the relay according to the received value
                         digitalWrite(RLY1, sw1State);
 
                         // Debug
-                        Serial.println("WroteSet TX relay state: " + String(sw1State));
+                        Serial.println("TX - Set relay state: " + String(sw1State));
 
                         // Debug
-                        Serial.println("RSSI: " + String(LoRa.packetRssi()));
+                        Serial.println("TX - RSSI: " + String(LoRa.packetRssi()));
                     }
                 }
             }
@@ -156,7 +247,7 @@ void loop()
             char messageType = LoRa.read();
 
             // If the destination address matches the local address
-            if (destinationAddress == localAddress && senderAddress == destination)
+            if (destinationAddress == rxAddress && senderAddress == txAddress)
             {
                 // If the address matches, read the rest of the message into a string
                 String received = "";
@@ -174,10 +265,10 @@ void loop()
                     digitalWrite(RLY1, relayState);
 
                     // Debug
-                    Serial.println("RSSI: " + String(LoRa.packetRssi()));
+                    Serial.println("RX - RSSI: " + String(LoRa.packetRssi()));
 
                     // Debug
-                    Serial.println("Wrote changed relay state: " + String(relayState));
+                    Serial.println("RX - Set relay state: " + String(relayState));
                 }
             }
         }
