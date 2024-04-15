@@ -215,7 +215,8 @@ void loop()
 
                         // Debug
                         Serial.println("TX - Saved changed relay state: " + String(sw1State));
-                        // Set the state of the relay according to the received value
+                        
+                        // Set the state of the loacal relay (on tx) according to the received value
                         digitalWrite(RLY1, sw1State);
 
                         // Debug
@@ -239,6 +240,7 @@ void loop()
         {
             // If a packet is available, read the destination address
             byte destinationAddress = LoRa.read();
+            Serial.println("RX - Destination address: " + String(destinationAddress));
 
             // Read the sender address
             byte senderAddress = LoRa.read();
