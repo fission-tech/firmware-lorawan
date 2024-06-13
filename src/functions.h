@@ -4,8 +4,10 @@
 #include <SPI.h>        // SPI library which is required by LoRa
 #include <LoRa.h>       // LoRa library which is required for LoRa communication
 #include <ArduinoOTA.h> // ArduinoOTA library which is required for OTA updates
-#include <deque>
-#include <string>
+#include <EEPROM.h>     // EEPROM library which is required for EEPROM read/write
+#include <AESLib.h>     // AES library which is required for encryption
+#include <deque>        // deque library which is required for log buffer
+#include <string>       // string library which is required for log buffer
 
 #if defined(ESP8266)
 /* ESP8266 Dependencies */
@@ -18,24 +20,32 @@
 #include <ESPmDNS.h> // ESP8266mDNS library which is required for mDNS
 #endif
 
-// #include <EEPROM.h>
-// #include <EEPROMWearLevel.h>   // EEPROMWearLevel library which is required for wear leveling of EEPROM
-
 #ifndef FUNCTIONS_H
 #define FUNCTIONS_H
 
-#define __FUNC_NAME__ __PRETTY_FUNCTION__
+#define DEBUG true
+// #define DEBUG false
+#define DEBUG_VERBOSE false
+
+#define KEY_LENGTH 16 // AES key length in bytes
+
+byte txAddress = 0xFF; // address of this device
+byte rxAddress = 0x13; // remoteAddress to send to
 
 // Set to true for transmitter, false for receiver
 bool isTransmitter = true;
 //bool isTransmitter = false;
 
-byte txAddress = 0xFF; // address of this device
-byte rxAddress = 0x13; // destination to send to
+// Use the AES key from the TX device on the RX device to decrypt messages
+byte aesKey[KEY_LENGTH] = {0x36, 0x6F, 0x88, 0x00, 0x37, 0x6F, 0x88, 0x00, 0x37, 0x6F, 0x88, 0x00, 0x37, 0x6F, 0x88, 0x00};
+// byte aesKey[KEY_LENGTH]; // use this on a TX device to generate a new key
+//byte aesIv[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}; // 16 bytes IV
+const char* ivString = "ThandaLoRaRange!";
+byte aesIv[16];
 
 // Set to true to enable WiFi on the ESP8266
 bool enableWiFi = false;
-//bool enableWiFi = true;
+// bool enableWiFi = true;
 
 String defaultAPssid = "Sensible IOT"; // default AP SSID
 String defaultAPpassword = "13371337"; // default AP password
@@ -70,17 +80,17 @@ unsigned long ackMillis = 0;
 bool timeoutActive = false;
 
 const unsigned long HEARTBEAT_INTERVAL = 60000;
-const char NODE_TX = 'T';
-const char NODE_RX = 'R';
+const char NODE_RX = 'R'; // HEX 0x52
+const char NODE_TX = 'T'; // HEX 0x54
 
-const char T_CHANGE = 'C';
-const char T_HEARTBEAT = 'H';
-const char T_ACK = 'A';
-const char T_LOCAL = 'L';
-const char T_TIMEOUT = 'T';
+const char T_ACK = 'A';       // HEX 0x41
+const char T_CHANGE = 'C';    // HEX 0x43
+const char T_HEARTBEAT = 'H'; // HEX 0x48
+const char T_LOCAL = 'L';     // HEX 0x4C
+const char T_TIMEOUT = 'T';   // HEX 0x54
 
 #define __FUNC_NAME__ __PRETTY_FUNCTION__
-//unsigned long lastPrintTime = 0;
+// unsigned long lastPrintTime = 0;
 
 // Declare a variable to store the previous time the LED blinked
 unsigned long previousMillisLED = 0;
@@ -88,8 +98,171 @@ unsigned long previousMillisLED = 0;
 // log buffer
 std::deque<std::string> logEntries;
 
-void logEntry(byte localAddress, byte destination, byte type, byte state, byte nodeType, String funcSignature) {
-    // Consider using local/remote instead of localAddress/destination
+AESLib aesLib;
+
+char getMessageType(byte typeByte)
+{
+    switch (typeByte)
+    {
+    case 0x41:
+        return T_ACK;
+    case 0x43:
+        return T_CHANGE;
+    case 0x48:
+        return T_HEARTBEAT;
+    case 0x4C:
+        return T_LOCAL;
+    case 0x54:
+        return T_TIMEOUT;
+    default:
+        return '?'; // return a question mark if the byte doesn't match any known type
+    }
+}
+
+void padPayload(byte *payload, int &length, int blockSize)
+{
+    int padLength = blockSize - (length % blockSize);
+    for (int i = 0; i < padLength; i++)
+    {
+        payload[length + i] = padLength;
+    }
+    length += padLength;
+}
+
+int unpadPayload(byte *payload, int length)
+{
+    int padLength = payload[length - 1];
+    return length - padLength;
+}
+
+void encrypt(byte *input, byte *output, int &length)
+{
+    if (DEBUG_VERBOSE)
+    {
+        // Print the input to the console
+        Serial.print(String(__FUNC_NAME__) + "Raw data: ");
+        for (uint16_t i = 0; i < sizeof(input); i++)
+        {
+            Serial.print(input[i], HEX);
+            Serial.print(" ");
+        }
+        Serial.println();
+    }
+
+    // Add padding
+    padPayload(input, length, 16);
+
+    // Encrypt
+    memcpy(aesIv, ivString, 16);
+    aesLib.encrypt(input, length, output, aesKey, 128, aesIv);
+
+    if (DEBUG_VERBOSE)
+    {
+        // Print the output to the console
+        Serial.print(String(__FUNC_NAME__) + "Encrypted data: ");
+        for (uint16_t i = 0; i < sizeof(output); i++)
+        {
+            Serial.print(output[i], HEX);
+            Serial.print(" ");
+        }
+        Serial.println();
+    }
+}
+
+void decrypt(byte *input, byte *output, int &length)
+{
+    if (DEBUG_VERBOSE)
+    {
+        // Print the input to the console
+        Serial.print(String(__FUNC_NAME__) + "Encrypted data: ");
+        for (uint16_t i = 0; i < sizeof(input); i++)
+        {
+            Serial.print(input[i], HEX);
+            Serial.print(" ");
+        }
+    }
+
+    // Decrypt
+    memcpy(aesIv, ivString, 16);
+    aesLib.decrypt(input, length, output, aesKey, 128, aesIv);
+
+    // Remove padding
+    length = unpadPayload(output, length);
+
+    if (DEBUG_VERBOSE)
+    {
+        Serial.println();
+        // Print the output to the console
+        Serial.print(String(__FUNC_NAME__) + "Decrypted data: ");
+        for (uint16_t i = 0; i < sizeof(output); i++)
+        {
+            Serial.print(output[i], HEX);
+            Serial.print(" ");
+        }
+        Serial.println();
+    }
+}
+
+void generateKeyFromChipId()
+{
+    uint32_t chipId = ESP.getChipId();
+
+    // Convert the chip ID to a byte array
+    for (int i = 0; i < KEY_LENGTH; i++)
+    {
+        aesKey[i] = (chipId >> (i * 8)) & 0xFF;
+    }
+}
+
+void printKey()
+{
+    // Print the key
+    Serial.print("AES Key: {");
+    for (int i = 0; i < KEY_LENGTH; i++)
+    {
+        if (i != 0)
+        {
+            Serial.print(", ");
+        }
+        Serial.print("0x");
+        if (aesKey[i] < 16)
+        {
+            Serial.print("0");
+        }
+        Serial.print(aesKey[i], HEX);
+    }
+    Serial.println("}");
+}
+/*
+void webUI()
+{
+    // Handle web UI
+    // Consider using ESP.getFreeHeap() to check available memory
+    // Consider using work time to calculate 'load' on the device
+
+    unsigned long loopStartTime = 0;
+    unsigned long workTime = 0;
+
+    //    void loop()
+    //    {
+    unsigned long startTime = micros(); // record start time
+
+    // ... your code here ...
+
+    unsigned long endTime = micros(); // record end time
+    workTime = endTime - startTime;
+    unsigned long loopTime = endTime - loopStartTime;
+    unsigned long idleTime = loopTime - workTime;
+
+    float cpuLoad = (float)workTime / loopTime;
+
+    loopStartTime = endTime; // reset for next loop
+    //    }
+}
+*/
+void logEntry(byte localAddress, byte remoteAddress, byte type, byte state, byte nodeType, String funcSignature)
+{
+    // Consider using local/remote instead of localAddress/remoteAddress
     // Consider using https://github.com/thijse/Arduino-Log
     // Consider sending the time from a gateway device or TX device in the heartbeat packet
     int firstSpacePos = funcSignature.indexOf(' ');
@@ -100,21 +273,26 @@ void logEntry(byte localAddress, byte destination, byte type, byte state, byte n
     String logEntry = "";
 
     // Handle type ACK, HEARTHBEAT, RELAY CHANGE, LOCAL RELAY
-    if ((type == 'A') || (type == 'H') || (type == 'C') || (type == 'L')) {
+    if ((type == 'A') || (type == 'H') || (type == 'C') || (type == 'L'))
+    {
         String message = "";
-        if (type == 'L') {
+        if (type == 'L')
+        {
             message = "set local relay state";
-        } else if (type == 'H') {
+        }
+        else if (type == 'H')
+        {
             message = "input state";
-        } else {
+        }
+        else
+        {
             message = "relay state";
         }
-        logEntry = String(timestamp) + " (" + String(char(nodeType)) + "X) " + funcName + " from 0x"
-        + String(localAddress, HEX) + " type \'" + String(char(type)) + "\' " + message + " " 
-        + String(state ? "ON" : "OFF") + " to 0x" + String(destination, HEX) + " (RSSI " + rssi + ")";
+        logEntry = String(timestamp) + " (" + String(char(nodeType)) + "X) " + funcName + " from 0x" + String(localAddress, HEX) + " type \'" + String(char(type)) + "\' " + message + " " + String(state ? "ON" : "OFF") + " to 0x" + String(remoteAddress, HEX) + " (RSSI " + rssi + ")";
         Serial.println(logEntry);
         // Add the entry to the logEntries deque
-        if (logEntries.size() == 100) { // limit to 100 entries
+        if (logEntries.size() == 100)
+        {                           // limit to 100 entries
             logEntries.pop_front(); // remove the oldest entry
         }
         std::string stdStr = logEntry.c_str();
@@ -122,48 +300,84 @@ void logEntry(byte localAddress, byte destination, byte type, byte state, byte n
     }
 
     // Handle timeout
-    if (type == 'T') {
-        Serial.println(String(timestamp) + " (" + String(char(nodeType)) + "X) " + funcName + " 0x"
-        + String(localAddress, HEX) + " type \'" + String(char(type)) + "\' timeout waiting for ACK from 0x" 
-        + String(destination, HEX) + " - set local relay OFF (RSSI " + rssi + ")");
+    if (type == 'T')
+    {
+        Serial.println(String(timestamp) + " (" + String(char(nodeType)) + "X) " + funcName + " 0x" + String(localAddress, HEX) + " type \'" + String(char(type)) + "\' timeout waiting for ACK from 0x" + String(remoteAddress, HEX) + " - set local relay OFF (RSSI " + rssi + ")");
     }
 }
 
 /**
- * @brief Sends the relay state over LoRa.
+ * @brief Sends a relay state message to the specified remoteAddress.
  *
- * This function begins a LoRa packet, writes the destination address, local address, message type ('R' for relay),
- * and relay state to the packet, ends the packet, and sends it.
+ * This function sends a relay state message to the specified remoteAddress. The message is encrypted using AES encryption.
  *
- * @param destination The destination address.
- * @param localAddress The local address.
- * @param state The relay state.
+ * @param localAddress The address of the local device.
+ * @param remoteAddress The address of the remoteAddress device.
+ * @param type The type of the message.
+ * @param state The relay state to send.
+ * @param nodeType The type of the node (TX or RX).
  */
-void sendRelayState(byte localAddress, byte destination, byte type, byte state, byte nodeType)
-// Consider using local/remote instead of localAddress/destination
+void sendRelayState(byte localAddress, byte remoteAddress, byte type, byte state, byte nodeType)
+// Consider using local/remote instead of localAddress/remoteAddress
 {
-    // Begin a LoRa packet
-    LoRa.beginPacket();
 
-    // Write the destination address to the packet
-    LoRa.write(destination);
+    // Create a buffer to hold the packet data
+    byte packet[18]; // Adjust the size as needed
+    unsigned int packetSize = 18;
+
+    // Write the remoteAddress address to the packet
+    packet[0] = remoteAddress;
 
     // Write the local address to the packet
-    LoRa.write(localAddress);
+    packet[1] = localAddress;
 
-    // Write the message type to the packet
-    LoRa.write(type);
+    // Bundle the messageType and relayState together
+    byte payload[16] = {type, state};
+    int payloadLength = 2; // Length of actual data
+    if (DEBUG)
+    {
+        /*        Serial.print("Message type: ");
+                Serial.print(payload[0], HEX);
+                Serial.print(" | Relay state: ");
+                Serial.println(payload[1], HEX);*/
+    }
 
-    // Write the relay state to the packet
-    LoRa.write(state);
+    // Encrypt the message
+    byte encryptedPayload[16];
+    encrypt(payload, encryptedPayload, payloadLength);
 
-    // End the LoRa packet and send it
+    // Copy encrypted payload to packet
+    memcpy(&packet[2], encryptedPayload, 16);
+
+    // Print the encrypted message to the Serial console
+    if (DEBUG_VERBOSE)
+    {
+        Serial.print("Encrypted message: ");
+        for (unsigned int i = 0; i < sizeof(encryptedPayload); i++)
+        {
+            Serial.print(encryptedPayload[i], HEX);
+            Serial.print(" ");
+        }
+        Serial.println();
+        // Print the packet data to the Serial console
+        Serial.print("LoRa packet data: ");
+        for (unsigned int i = 0; i < packetSize; i++)
+        {
+            Serial.print(packet[i], HEX);
+            Serial.print(" ");
+        }
+        Serial.println();
+    }
+
+    // Write the packet data to the LoRa module
+    LoRa.beginPacket();
+    LoRa.write(packet, packetSize);
     LoRa.endPacket();
 
     // Switch the LoRa module back into receive mode
     LoRa.receive();
 
-    logEntry(localAddress, destination, type, state, nodeType, String(__FUNC_NAME__));
+    logEntry(localAddress, remoteAddress, payload[0], payload[1], nodeType, String(__FUNC_NAME__));
 }
 
 /**
@@ -239,7 +453,7 @@ void handleChangeRelayState(int relayState)
     if (!isTransmitter)
     {
         // on RX, log local relay change and send T_ACK to TX
-        logEntry(txAddress, rxAddress, T_LOCAL , relayState, (isTransmitter) ? 'T' : 'R', String(__FUNC_NAME__));
+        logEntry(txAddress, rxAddress, T_LOCAL, relayState, (isTransmitter) ? 'T' : 'R', String(__FUNC_NAME__));
         sendRelayState(rxAddress, txAddress, T_ACK, relayState, (isTransmitter) ? 'T' : 'R');
     }
     else
@@ -249,43 +463,14 @@ void handleChangeRelayState(int relayState)
     }
 }
 
-// TX - Transmitter
-void handleTransmitting() {
-    
-    // only applicable to TX units
-    if (!isTransmitter) return;
+void handleHeartbeatOrAck(char messageType, int relayState, int localRlyState)
+{
 
-    // fetch the current time, compare with the previous heartbeat time
-    // if the interval has passed, send a heartbeat
-    // and reset the previous heartbeat time to now
-    unsigned long currentMillis = millis();
-    if (currentMillis - previousMillisHeartbeat >= HEARTBEAT_INTERVAL) {
-        previousMillisHeartbeat = currentMillis;
-        sendRelayState(txAddress, rxAddress, T_HEARTBEAT, inpState, NODE_TX);
-    }
-
-    // read the state of the dry contact
-    // if the state has changed, reset the debounce timer
-    int state = digitalRead(INP1);
-    if (state != lastInpState) {
-        lastDebounceTime = millis();
-    }
-
-    // if the debounce timer has passed the debounce delay, update the switch state
-    if ((millis() - lastDebounceTime) > debounceDelay && state != inpState) {
-        handleSwitchStateChange(state);
-    }
-
-    // save the state of the dry contact for the next iteration
-    lastInpState = state;
-}
-
-void handleHeartbeatOrAck(char messageType, int relayState, int localRlyState) {
-    
     // if ACK - which should only be received by TX
     // reset ackMillis and timeoutActive
 
-    if (messageType == T_ACK) {
+    if (messageType == T_ACK)
+    {
         ackMillis = millis();
         timeoutActive = false;
     }
@@ -295,62 +480,145 @@ void handleHeartbeatOrAck(char messageType, int relayState, int localRlyState) {
     // change the relay state to match the remote state and return
     // but if the messageType is ACK, delay before changing the relay state
 
-    if (localRlyState != relayState) {
-        if (messageType == T_ACK) {
+    if (localRlyState != relayState)
+    {
+        if (messageType == T_ACK)
+        {
             delay(500);
         }
         handleChangeRelayState(relayState);
         return;
-    } else if (messageType == T_HEARTBEAT) {
+    }
+    else if (messageType == T_HEARTBEAT)
+    {
         sendRelayState(rxAddress, txAddress, T_ACK, localRlyState, NODE_RX);
     }
-
 }
 
-void handleReceiving() {
+// TX - Transmitter
+void handleTransmitting()
+{
+
+    // only applicable to TX units
+    if (!isTransmitter)
+        return;
+
+    // fetch the current time, compare with the previous heartbeat time
+    // if the interval has passed, send a heartbeat
+    // and reset the previous heartbeat time to now
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillisHeartbeat >= HEARTBEAT_INTERVAL)
+    {
+        previousMillisHeartbeat = currentMillis;
+        sendRelayState(txAddress, rxAddress, T_HEARTBEAT, inpState, NODE_TX);
+    }
+
+    // read the state of the dry contact
+    // if the state has changed, reset the debounce timer
+    int state = digitalRead(INP1);
+    if (state != lastInpState)
+    {
+        lastDebounceTime = millis();
+    }
+
+    // if the debounce timer has passed the debounce delay, update the switch state
+    if ((millis() - lastDebounceTime) > debounceDelay && state != inpState)
+    {
+        handleSwitchStateChange(state);
+    }
+
+    // save the state of the dry contact for the next iteration
+    lastInpState = state;
+}
+
+void handleReceiving()
+{
     int packetSize = LoRa.parsePacket();
-    if (packetSize == 0) return;
+    if (packetSize == 0)
+        return;
 
-    byte destinationAddress = LoRa.read();
-    byte senderAddress = LoRa.read();
+    byte packet[18];
+    for (unsigned int i = 0; i < sizeof(packet); i++)
+    {
+        packet[i] = LoRa.read();
+    }
 
-    if ((isTransmitter && (destinationAddress != txAddress || senderAddress != rxAddress)) ||
-        (!isTransmitter && (destinationAddress != rxAddress || senderAddress != txAddress))) {
-        Serial.println(String(senderAddress) + " not permitted to send to " + String(destinationAddress));
+    byte thisAddress = packet[0];
+    byte remoteAddress = packet[1];
+
+    if ((isTransmitter && (thisAddress != txAddress || remoteAddress != rxAddress)) ||
+        (!isTransmitter && (thisAddress != rxAddress || remoteAddress != txAddress)))
+    {
+        if (DEBUG_VERBOSE)
+        {
+            Serial.println(String(__FUNC_NAME__) + (remoteAddress) + " not permitted to send to " + String(thisAddress));
+        }
         return;
     }
 
-    char messageType = LoRa.read();
-    int relayState = LoRa.read();
+    else if (packetSize != 18)
+    {
+        if (DEBUG)
+        {
+            Serial.println(String(__FUNC_NAME__) + ": " + "Unexpected packet size (" + packetSize + "), terminating...");
+        }
+        return;
+    }
 
-    while (LoRa.available()) {
-        Serial.println(String(__FUNC_NAME__) + ": " + "Unexpected additional data, terminating...");
+    // Decrypt the received message
+    byte decryptedPayload[16];
+    int payloadLength = 16;
+    decrypt(&packet[2], decryptedPayload, payloadLength);
+
+    byte messageType = decryptedPayload[0];
+    byte relayState = decryptedPayload[1];
+
+    if (DEBUG)
+    {
+        logEntry(thisAddress, remoteAddress, messageType, relayState, (isTransmitter) ? 'T' : 'R', String(__FUNC_NAME__));
+    }
+
+    while (LoRa.available())
+    {
+        if (DEBUG_VERBOSE)
+        {
+            Serial.println(String(__FUNC_NAME__) + ": " + "Unexpected additional data, terminating...");
+        }
         return;
     }
 
     int localRlyState = digitalRead(RLY1);
 
-    if (messageType == T_CHANGE && localRlyState != relayState) {
+    if (messageType == T_CHANGE && localRlyState != relayState)
+    {
         handleChangeRelayState(relayState);
-    } else if (messageType == T_HEARTBEAT || messageType == T_ACK) {
+    }
+    else if (messageType == T_HEARTBEAT || messageType == T_ACK)
+    {
         handleHeartbeatOrAck(messageType, relayState, localRlyState);
-    } else if (messageType == T_CHANGE && localRlyState == relayState) {
+    }
+    else if (messageType == T_CHANGE && localRlyState == relayState)
+    {
         logEntry(txAddress, rxAddress, T_ACK, relayState, (isTransmitter) ? 'T' : 'R', String(__FUNC_NAME__));
     }
 }
 
-void handleTimeout() {
-    if (!isTransmitter || timeoutActive) return;
+void handleTimeout()
+{
+    if (!isTransmitter || timeoutActive)
+        return;
 
     unsigned long timeoutMillis = millis();
-    if (timeoutMillis - ackMillis >= HEARTBEAT_INTERVAL * 2) {
+    if (timeoutMillis - ackMillis >= HEARTBEAT_INTERVAL * 2)
+    {
         logEntry(txAddress, rxAddress, T_TIMEOUT, 0, (isTransmitter) ? 'T' : 'R', String(__FUNC_NAME__));
         handleChangeRelayState(0);
         timeoutActive = true;
     }
 }
 
-void handleTransceiver() {
+void handleTransceiver()
+{
     handleReceiving();
     handleTimeout();
     handleTransmitting();

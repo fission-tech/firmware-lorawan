@@ -25,6 +25,10 @@ void setup()
 
     if (isTransmitter)
     {
+        // TODO: Write this to EEPROM and provide web interface to read it on TX and write it on RX
+        // Generate they encryption key
+        // generateKeyFromChipId();
+
         // Set the dry contact pin as an input
         pinMode(INP1, INPUT);
     }
@@ -100,6 +104,9 @@ void setup()
             Serial.println("Error setting up MDNS responder!");
         }
     }
+
+    // Print the encryption key
+    printKey();
 
     // Announce startup
     isTransmitter ? Serial.println("TX - Transmitter started!") : Serial.println("RX - Receiver started!");
