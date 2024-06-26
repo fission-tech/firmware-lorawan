@@ -316,7 +316,25 @@ void logEntry(byte localAddress, byte remoteAddress, byte type, byte state, byte
         Serial.println(String(timestamp) + " (" + String(char(nodeType)) + "X) " + funcName + " 0x" + String(localAddress, HEX) + " type \'" + String(char(type)) + "\' timeout waiting for ACK from 0x" + String(remoteAddress, HEX) + " - set local relay OFF (RSSI " + rssi + ")");
     }
 }
-
+/// For Clients to attempt to reconnect if the client is not being connected
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("ESP8266Client")) {
+      Serial.println("connected");
+      // Subscribe
+      client.subscribe(subscribedTopic);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
 /**
  * @brief Sends a relay state message to the specified remoteAddress.
  *
@@ -384,6 +402,15 @@ void sendRelayState(byte localAddress, byte remoteAddress, byte type, byte state
     LoRa.beginPacket();
     LoRa.write(packet, packetSize);
     LoRa.endPacket();
+
+    //MQTT Transmission of data
+         if (!client.connected()) 
+         {
+            reconnect();
+         }
+        client.publish(subscribedTopic,payload); // Publish the non-encrypted data
+        client.publish(subscribedTopic,packet); // Publish the encrypted data
+
 
     // Switch the LoRa module back into receive mode
     LoRa.receive();
