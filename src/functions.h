@@ -15,7 +15,9 @@
 /* ESP8266 Dependencies */
 #include <ESP8266WiFi.h> // WiFi library which is required for WiFi communication
 #include <ESP8266mDNS.h> // ESP8266mDNS library which is required for mDNS
+#include "WiFiClientSecure.h"
 #include <PubSubClient.h>
+
 
 #elif defined(ESP32)
 /* ESP32 Dependencies */
@@ -58,10 +60,30 @@ uint16_t relayStateControlId; // Declare the control ID globally
 
 //Getting connected to MQTT Server
 const char* mqtt_server = "YOUR_MQTT_BROKER_IP_ADDRESS"; // Declare your IP address here
-const long int Port = 1880; // Declare your port here
+const long int Port = 8883; // Declare your port here
 const char* subscribedTopic = "esp32/output"; //Declare your topic here
-WiFiClient espClient;
-PubSubClient client(espClient);
+WiFiClientSecure client;
+PubSubClient mqtt_client(client); 
+const char* CA_cert = \
+"-----BEGIN CERTIFICATE-----\n" \
+"################################################################\n" \
+"################################################################\n" \
+"################################################################\n" \
+"-----END CERTIFICATE-----";
+
+const char* ESP_CA_cert = \
+"-----BEGIN CERTIFICATE-----\n" \
+"################################################################\n" \
+"################################################################\n" \
+"################################################################\n" \
+"-----END CERTIFICATE-----";
+
+const char* ESP_RSA_key= \
+"-----BEGIN RSA PRIVATE KEY-----\n" \
+"################################################################\n" \
+"################################################################\n" \
+"################################################################\n" \
+"-----END RSA PRIVATE KEY-----";
 
 // Define the pins for the LoRa module
 #define nss 15 // LoRa chip select
@@ -317,24 +339,7 @@ void logEntry(byte localAddress, byte remoteAddress, byte type, byte state, byte
     }
 }
 /// For Clients to attempt to reconnect if the client is not being connected
-void reconnect() {
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-    if (client.connect("ESP8266Client")) {
-      Serial.println("connected");
-      // Subscribe
-      client.subscribe(subscribedTopic);
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
-    }
-  }
-}
+
 /**
  * @brief Sends a relay state message to the specified remoteAddress.
  *
@@ -402,16 +407,22 @@ void sendRelayState(byte localAddress, byte remoteAddress, byte type, byte state
     LoRa.beginPacket();
     LoRa.write(packet, packetSize);
     LoRa.endPacket();
-
-    //MQTT Transmission of data
-         if (!client.connected()) 
-         {
-            reconnect();
-         }
-        client.publish(subscribedTopic,payload); // Publish the non-encrypted data
-        client.publish(subscribedTopic,packet); // Publish the encrypted data
-
-
+..................
+   if (mqtt_client.connect("ESP32")) {                       
+    Serial.print("Connected, mqtt_client state: ");
+    Serial.println(mqtt_client.state());
+    //Publsih a demo message to topic with the payload data
+    mqtt_client.publish(subscribedTopic, payload);
+  }
+  else {
+    Serial.println("Connected failed!  mqtt_client state:");
+    Serial.print(mqtt_client.state());
+    Serial.println("WiFiClientSecure client state:");
+    char lastError[100];
+    client.lastError(lastError,100);  //Get the last error for WiFiClientSecure
+    Serial.print(lastError);
+  }
+...................
     // Switch the LoRa module back into receive mode
     LoRa.receive();
 

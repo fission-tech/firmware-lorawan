@@ -16,6 +16,13 @@ void setup()
     // Begin serial communication at 115200 baud
     Serial.begin(115200);
 
+    //Set up the certificates and keys
+    client.setCACert(CA_cert);          //Root CA certificate
+    client.setCertificate(ESP_CA_cert); //for client verification if the require_certificate is set to true in the mosquitto broker config
+    client.setPrivateKey(ESP_RSA_key);  //for client verification if the require_certificate is set to true in the mosquitto broker config
+  
+     mqtt_client.setServer(mqtt_server, Port);
+    
     // Wait for serial port to connect
     while (!Serial)
         ;
@@ -111,7 +118,6 @@ void setup()
     // Announce startup
     isTransmitter ? Serial.println("TX - Transmitter started!") : Serial.println("RX - Receiver started!");
 
-    client.setServer(mqtt_server, Port);
 
 
 }
@@ -126,8 +132,27 @@ void loop()
         ArduinoOTA.handle();
     }
 
-    client.loop();
     handleTransceiver();
     // Blink the LED
     updateLED();
+}
+
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("ESP8266Client")) {
+      Serial.println("connected");
+      // Subscribe
+      client.subscribe(subscribedTopic);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
 }
