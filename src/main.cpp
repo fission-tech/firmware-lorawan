@@ -110,8 +110,31 @@ void setup()
 
     // Announce startup
     isTransmitter ? Serial.println("TX - Transmitter started!") : Serial.println("RX - Receiver started!");
+
+    client.setServer(mqtt_server, Port);
+
+
 }
 
+/// For Clients to attempt to reconnect if the client is not being connected
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("ESP8266Client")) {
+      Serial.println("connected");
+      // Subscribe
+      client.subscribe(subscribedTopic);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
 // The loop function runs over and over again forever
 void loop()
 {
@@ -120,7 +143,10 @@ void loop()
         // handle OTA update requests
         ArduinoOTA.handle();
     }
-
+     if (!client.connected()) {
+    reconnect();
+  }
+    client.loop();
     handleTransceiver();
 
     // Blink the LED

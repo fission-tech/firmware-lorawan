@@ -9,10 +9,13 @@
 #include <deque>        // deque library which is required for log buffer
 #include <string>       // string library which is required for log buffer
 
+
+
 #if defined(ESP8266)
 /* ESP8266 Dependencies */
 #include <ESP8266WiFi.h> // WiFi library which is required for WiFi communication
 #include <ESP8266mDNS.h> // ESP8266mDNS library which is required for mDNS
+#include <PubSubClient.h>
 
 #elif defined(ESP32)
 /* ESP32 Dependencies */
@@ -43,14 +46,22 @@ byte aesKey[KEY_LENGTH] = {0x36, 0x6F, 0x88, 0x00, 0x37, 0x6F, 0x88, 0x00, 0x37,
 const char* ivString = "ThandaLoRaRange!";
 byte aesIv[16];
 
-// Set to true to enable WiFi on the ESP8266
-bool enableWiFi = false;
-// bool enableWiFi = true;
+// Set to true/false to enable/disable WiFi on the ESP8266
+//bool enableWiFi = false;
+bool enableWiFi = true;
 
 String defaultAPssid = "Sensible IOT"; // default AP SSID
 String defaultAPpassword = "13371337"; // default AP password
 
 uint16_t relayStateControlId; // Declare the control ID globally
+
+
+//Getting connected to MQTT Server
+const char* mqtt_server = "YOUR_MQTT_BROKER_IP_ADDRESS"; // Declare your IP address here
+const long int Port = 1880; // Declare your port here
+const char* subscribedTopic = "esp32/output"; //Declare your topic here
+WiFiClient espClient;
+PubSubClient client(espClient);
 
 // Define the pins for the LoRa module
 #define nss 15 // LoRa chip select
